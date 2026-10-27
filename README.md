@@ -30,7 +30,8 @@ The prior README reported the following values for the RTX 3050 laptop setup. Th
 - The PyTorch path counts whitespace-separated text fragments from the streamer, not model tokens. Its reported throughput and per-token time should not be interpreted as tokenizer-token metrics.
 - The Ollama field labeled time to first token comes from `prompt_eval_duration`, not a measured first streamed token. The TensorRT-LLM script records the first response time, which requires validation as a first-token measurement.
 - The Ollama memory value in the script is a hard-coded estimate. The TensorRT-LLM script samples device-wide used memory before and after inference; the latter is not a continuously measured peak. PyTorch uses its allocator's peak counter after resetting it. These are different memory measurements.
-- The TensorRT-LLM script adds token IDs from each response. Its interpretation of streamed IDs as new tokens should be checked against the installed runtime's response semantics. The cache fraction is a configuration value, not a demonstrated hard VRAM cap.\n- Output lengths, prompt formatting, checkpoint or quantization artifacts, and runtime settings require alignment before a comparative benchmark. The script does not evaluate output quality, so it cannot establish that quantization preserves quality.
+- The TensorRT-LLM script adds token IDs from each response. Its interpretation of streamed IDs as new tokens should be checked against the installed runtime's response semantics. The cache fraction is a configuration value, not a demonstrated hard VRAM cap.
+- Output lengths, prompt formatting, checkpoint or quantization artifacts, and runtime settings require alignment before a comparative benchmark. The script does not evaluate output quality, so it cannot establish that quantization preserves quality.
 
 ## Next steps
 
