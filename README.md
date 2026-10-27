@@ -1,74 +1,37 @@
-# High-Performance Edge Inference: Optimizing Sarvam-1 for 4GB VRAM Constraints
+# Sarvam-1 inference on a 4 GB GPU
 
-## 🎯 Intent and Scope
-The objective of this project is to achieve state-of-the-art inference performance for `sarvamai/sarvam-1` on a severely constrained **NVIDIA RTX 3050 Laptop GPU (4GB VRAM)**. 
+An exploratory project studying quantization and inference for [Sarvam-1](https://huggingface.co/sarvamai/sarvam-1) on an NVIDIA RTX 3050 Laptop GPU with 4 GB VRAM. The repository contains benchmarking scripts for a TensorRT-LLM Executor engine and for Ollama and PyTorch.
 
-Standard high-level deployments often fail on 4GB cards due to unmanaged KV cache allocation and framework overhead. This experiment demonstrates a rigorous optimization pipeline—moving from a failing PyTorch baseline to a highly efficient, bare-metal **TensorRT-LLM C++ Executor**. 
+The original experiment explored W4A16 AWQ quantization and a TensorRT-LLM engine with batch size 1, a maximum input length of 512, and a maximum sequence length of 1,024. The original notes describe using Docker in WSL2. The quantization and engine-build scripts, checkpoints, engine files, dependency versions, and raw benchmark logs are not included here.
 
-The engineering goals were:
-1. **Low Latency:** Achieving sub-25ms Time-To-First-Token (TTFT).
-2. **Memory Fencing:** Hard-capping the VRAM footprint at ~3.0 GB to ensure system stability.
-3. **Throughput Maximization:** Outperforming consumer runtimes like `llama.cpp` by leveraging NVIDIA’s low-level C++ bindings.
+**Status:** The historical results below are self-reported observations, not a validated comparison between runtimes. The scripts use different timing, token-counting and memory methods, and their model artifacts and generation settings have not been shown to match. The earlier 50% speedup claim is therefore not established.
 
----
+## Repository
 
-## 💻 Hardware & Environment
-* **GPU:** NVIDIA GeForce RTX 3050 (Laptop)
-* **VRAM:** 4.00 GB Physical
-* **Platform:** Docker on WSL2 (Windows Subsystem for Linux)
-* **Model:** `sarvamai/sarvam-1` (2B Parameters)
+- [`trt_benchmark.py`](trt_benchmark.py) uses the TensorRT-LLM Python bindings for the C++ Executor, runs three synchronous warmups, and issues one streaming request. It reads an engine from `/models/sarvam-1-engine` and tokenizer files from `/models/sarvam-1`. The script requests up to 150 generated tokens and sets the KV cache free-GPU-memory fraction to 0.3.
+- [`Ollama_Pytorch_benchmark.py`](Ollama_Pytorch_benchmark.py) sends requests to a local Ollama server for `mashriram/sarvam-1` and loads a local model with Transformers for a PyTorch run. Its local Windows model path is hard-coded and must be adapted. It performs warmups and requests up to 100 new tokens in the PyTorch path.
 
----
+These scripts require the appropriate model artifacts and compatible installations of PyTorch, Transformers, and their respective runtimes. The combined script also imports AutoAWQ, Requests and tabulate and applies compatibility monkey patches. Version pins and an end-to-end setup have not been verified, so the repository does not currently provide a guaranteed reproduction command.
 
-## 🛠️ Optimization Methodology
+## Historical observations
 
-### Step 1: W4A16 AWQ Quantization
-The original FP16 weights of Sarvam-1 exceed 5GB, making a 4GB deployment physically impossible. 
-* **Action:** Utilized NVIDIA `modelopt` to perform **INT4 Activation-Aware Weight Quantization (AWQ)**.
-* **Result:** Reduced the model weight footprint sufficiently to fit within 4GB, while maintaining the model's linguistic integrity.
+The prior README reported the following values for the RTX 3050 laptop setup. The raw outputs and full configurations are not available in this repository, so the numbers cannot currently be independently checked. They are retained as a record of that report and **must not be treated as an apples-to-apples performance ranking**.
 
-### Step 2: The Native PyTorch Bottleneck
-Initial testing used the Hugging Face `transformers` library to run the **INT4 AWQ** quantized model.
-* **Observation:** Despite the 4-bit weights, the native PyTorch/Transformers implementation attempted to reserve **4.8+ GB of VRAM** for the KV cache and workspace. 
-* **Result:** Significant performance degradation due to memory swapping, resulting in a throughput of only **~1.15 TPS**. This proved that quantization alone is insufficient without low-level memory management.
+| Value as previously reported | PyTorch | Ollama | TensorRT-LLM |
+| --- | ---: | ---: | ---: |
+| Throughput | 1.15 TPS | about 58 TPS | 86.77 TPS |
+| Time to first token | 4,301.81 ms | about 30 ms | 22.75 ms |
+| Time per output token | about 866 ms | about 17 ms | 11.45 ms |
+| Memory footprint | over 4.8 GB | OS-managed | 3.03 GB |
 
-### Step 3: Establishing the `llama.cpp` Baseline
-To benchmark against standard consumer-grade optimization, the model was run via Ollama (`llama.cpp`).
-* **Result:** Success. 
-* **Metrics:** Delivered a stable **~58.00 TPS** with a TTFT of **~30.00 ms**, establishing a baseline for localized inference.
+## Measurement limitations
 
-### Step 4: Engineering the TensorRT-LLM C++ Solution
+- The TensorRT-LLM script divides its counted output tokens by request wall time. The Ollama script divides `eval_count` by Ollama's `eval_duration`. These denominators describe different intervals.
+- The PyTorch path counts whitespace-separated text fragments from the streamer, not model tokens. Its reported throughput and per-token time should not be interpreted as tokenizer-token metrics.
+- The Ollama field labeled time to first token comes from `prompt_eval_duration`, not a measured first streamed token. The TensorRT-LLM script records the first response time, which requires validation as a first-token measurement.
+- The Ollama memory value in the script is a hard-coded estimate. The TensorRT-LLM script samples device-wide allocated memory before and after inference; the latter is not a continuously measured peak. PyTorch uses its allocator's peak counter after resetting it. These are different memory measurements.
+- Output lengths, prompt formatting, checkpoint or quantization artifacts, and runtime settings require alignment before a comparative benchmark. The script does not evaluate output quality, so it cannot establish that quantization preserves quality.
 
+## Next steps
 
-
-#### Phase A: AOT Engine Compilation
-The AWQ checkpoint was compiled into a static C++ execution engine. To survive the build on 4GB VRAM, the engine was "fenced" with strict architectural limits:
-* `max_batch_size`: 1
-* `max_input_len`: 512
-* `max_seq_len`: 1024
-
-#### Phase B: Bypassing Framework Overhead
-Attempts to use high-level TRT-LLM wrappers (the `LLM()` Python class or `trtllm-serve`) failed on the RTX 3050. These "enterprise-ready" abstractions default to massive runtime allocations (e.g., 2048 batch slots) that triggered OS-level OOM kills in the WSL2 container. 
-
-#### Phase C: Bare-Metal C++ Implementation
-To achieve the target metrics, the Python high-level API was discarded in favor of the **`tensorrt_llm.bindings.executor.Executor`**.
-* **Synchronous Warmup:** Implemented a blocking warmup sequence to ensure the C++ graph was fully primed before benchmarking.
-
-
----
-
-## 📊 Comparative Performance Results
-
-The following metrics were captured during synchronous, blocking inference:
-
-| Metric | PyTorch (INT4 AWQ) | `llama.cpp` (Ollama) | TRT-LLM C++ (Executor) |
-| :--- | :--- | :--- | :--- |
-| **Throughput (TPS)** | 1.15 | ~58.00 | **86.77** *(~50% Speedup)* |
-| **Time To First Token (TTFT)** | 4301.81ms | ~30.00 ms | **22.75 ms** |
-| **Time Per Token (TPOT)** | ~866ms | ~17.00 ms | **11.45 ms** |
-| **Total Memory Footprint** | 4.80+ GB | Dynamic(OS) | **3.03 GB (Locked)** |
-
----
-
-## 🚀 Conclusion
-By stripping away the abstraction layers and targeting the **TensorRT-LLM C++ Executor**, this project achieved a **~50% throughput increase** over standard optimized runtimes on identical hardware. This confirms that for 4GB VRAM edge devices, direct C++ bindings are the only way to unlock the full potential of NVIDIA hardware, delivering an impressive **86.77 TPS** while maintaining a stable 1GB VRAM safety margin for the host system.
+Record exact model revisions, artifacts, versions, GPU and container configuration. Run the same prompts and generation limits through each backend, count tokenizer output tokens consistently, and measure wall time, first-token latency, decode throughput and peak GPU memory with the same definitions. Save raw results and repeat runs, then evaluate quality separately from speed and memory.
